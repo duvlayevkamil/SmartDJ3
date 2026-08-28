@@ -1,0 +1,6 @@
+{
+    "recommendations": [
+        "ollama.ollama",
+        "khaled.vscode-openrouter-extension"
+    ]
+}

@@ -105,10 +105,7 @@ class DatabaseManager:
             FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
             FOREIGN KEY (lesson_id) REFERENCES lesson_assignments(id) ON DELETE CASCADE
         )""")
-        try:
-            self.cursor.execute("ALTER TABLE scheduled_lessons ADD COLUMN week_index INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
+        # week_index column removed — 1-haftalik jadval
         self.cursor.execute("""CREATE TABLE IF NOT EXISTS tayanch_reja (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             subject_name TEXT NOT NULL,
@@ -128,17 +125,10 @@ class DatabaseManager:
             key TEXT PRIMARY KEY,
             value TEXT
         )""")
-        self.cursor.execute("""CREATE TABLE IF NOT EXISTS standalone_half_subjects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            class_id INTEGER NOT NULL,
-            subject_id INTEGER NOT NULL,
-            UNIQUE(class_id, subject_id)
-        )""")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_lesson_class ON lesson_assignments(class_id)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_lesson_teacher ON lesson_assignments(teacher_id)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_class ON scheduled_lessons(class_id)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_teacher ON scheduled_lessons(teacher_id)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_week ON scheduled_lessons(week_index)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_unavail_teacher ON teacher_unavailable(teacher_id)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_tayanch_level ON tayanch_reja(class_level)")
         self.connection.commit()
@@ -301,17 +291,14 @@ class DatabaseManager:
         self.cursor.execute("DELETE FROM lesson_assignments WHERE id = ?", (assignment_id,))
         self.connection.commit()
 
-    def save_scheduled_lessons(self, timetable_data, week_index=0):
-        self.cursor.execute("DELETE FROM scheduled_lessons WHERE week_index = ?", (week_index,))
+    def save_scheduled_lessons(self, timetable_data):
+        self.cursor.execute("DELETE FROM scheduled_lessons")
         for (class_id, day, period), info in timetable_data.items():
-            self.cursor.execute("INSERT INTO scheduled_lessons (class_id, day, period, lesson_id, subject_name, teacher_name, teacher_id, color, week_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (class_id, day, period, info.get("lesson_id"), info.get("subject_name"), info.get("teacher_name"), info.get("teacher_id"), info.get("color"), week_index))
+            self.cursor.execute("INSERT INTO scheduled_lessons (class_id, day, period, lesson_id, subject_name, teacher_name, teacher_id, color) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (class_id, day, period, info.get("lesson_id"), info.get("subject_name"), info.get("teacher_name"), info.get("teacher_id"), info.get("color")))
         self.connection.commit()
 
-    def load_scheduled_lessons(self, week_index=None):
-        if week_index is not None:
-            self.cursor.execute("SELECT sl.*, COALESCE(s.short_name, '') as subject_short, COALESCE(t.short_name, '') as teacher_short FROM scheduled_lessons sl LEFT JOIN subjects s ON sl.subject_name = s.name LEFT JOIN teachers t ON sl.teacher_id = t.id WHERE sl.week_index = ?", (week_index,))
-        else:
-            self.cursor.execute("SELECT sl.*, COALESCE(s.short_name, '') as subject_short, COALESCE(t.short_name, '') as teacher_short FROM scheduled_lessons sl LEFT JOIN subjects s ON sl.subject_name = s.name LEFT JOIN teachers t ON sl.teacher_id = t.id")
+    def load_scheduled_lessons(self):
+        self.cursor.execute("SELECT sl.*, COALESCE(s.short_name, '') as subject_short, COALESCE(t.short_name, '') as teacher_short FROM scheduled_lessons sl LEFT JOIN subjects s ON sl.subject_name = s.name LEFT JOIN teachers t ON sl.teacher_id = t.id")
         rows = self.cursor.fetchall()
         timetable = {}
         for row in rows:
@@ -321,7 +308,6 @@ class DatabaseManager:
                 "teacher_id": row[7], "color": row[8], "class_id": row[1],
                 "subject_short": row[11] if len(row) > 11 else "",
                 "teacher_short": row[12] if len(row) > 12 else "",
-                "week_index": row[10] if len(row) > 10 else 0,
             }
         return timetable
 
@@ -391,26 +377,6 @@ class DatabaseManager:
         self.cursor.execute("DELETE FROM tayanch_reja")
         self.connection.commit()
 
-    def get_standalone_half_subjects(self, class_id):
-        self.cursor.execute("SELECT sh.subject_id, s.name FROM standalone_half_subjects sh JOIN subjects s ON sh.subject_id = s.id WHERE sh.class_id = ?", (class_id,))
-        return self.cursor.fetchall()
-
-    def save_standalone_half_subjects(self, class_id, subject_ids):
-        self.cursor.execute("DELETE FROM standalone_half_subjects WHERE class_id = ?", (class_id,))
-        for subject_id in subject_ids:
-            self.cursor.execute("INSERT INTO standalone_half_subjects (class_id, subject_id) VALUES (?, ?)", (class_id, subject_id))
-        self.connection.commit()
-
-    def get_fractional_subjects(self, class_id):
-        assignments = self.get_class_assignments(class_id)
-        fractional = []
-        for a in assignments:
-            subject_id = a[5]
-            subject_name = a[1]
-            weekly_hours = a[4]
-            if weekly_hours != int(weekly_hours):
-                fractional.append({"subject_id": subject_id, "subject_name": subject_name, "weekly_hours": weekly_hours, "is_half": weekly_hours < 1})
-        return fractional
 
     def clear_all(self):
         self.cursor.execute("DELETE FROM scheduled_lessons")

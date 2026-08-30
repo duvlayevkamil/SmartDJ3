@@ -505,14 +505,13 @@ class ScheduleWorker(QThread):
     UI bloklanmasin, progress signal orqali yangilansin.
     """
     progress = pyqtSignal(str, int, int, float)  # class_name, idx, score, elapsed
-    finished = pyqtSignal(dict, list, int, dict)  # all_data, conflicts, placed_count, week2_data
+    finished = pyqtSignal(dict, list, int)  # all_data, conflicts, placed_count
     error = pyqtSignal(str)
 
-    def __init__(self, classes, db, algorithm="brkga", parent=None):
+    def __init__(self, classes, db, parent=None):
         super().__init__(parent)
         self.classes = classes
         self.db = db
-        self.algorithm = algorithm
         self.cancel_flag = False
 
     def cancel(self):
@@ -528,7 +527,7 @@ class ScheduleWorker(QThread):
             db = DatabaseManager()
             db.initialize()
 
-            scheduler = TimetableScheduler(algorithm=self.algorithm, db_manager=db)
+            scheduler = TimetableScheduler(db_manager=db)
             start_time = time.time()
 
             self.progress.emit("Jadval tuzilmoqda...", 0, 0, 0)
@@ -540,7 +539,7 @@ class ScheduleWorker(QThread):
                     class_idx, score, elapsed
                 )
 
-            all_data, conflicts, week2_data = scheduler.generate_all_class_timetables(
+            all_data, conflicts = scheduler.generate_all_class_timetables(
                 self.classes, db,
                 cancel_flag=lambda: self.cancel_flag,
                 progress_callback=on_progress
@@ -553,7 +552,7 @@ class ScheduleWorker(QThread):
                 len(self.classes), -1, elapsed
             )
 
-            self.finished.emit(all_data, conflicts, placed, week2_data)
+            self.finished.emit(all_data, conflicts, placed)
 
         except Exception as e:
             import traceback
@@ -1371,8 +1370,7 @@ class ManualScheduleWindow(QWidget):
 
         self.classes = []
         self.timetable_data = {}
-        self.timetable_data_week2 = {}  # 2-hafta (Denominator)
-        self.current_week_index = 0  # 0=numerator, 1=denominator
+        
         self.placed_counts = {}
         self.filter_type = "subject"
         self.current_col_width = 30
@@ -1384,7 +1382,7 @@ class ManualScheduleWindow(QWidget):
         self.selected_unplaced_lesson = None
         self.selected_unplaced_button = None
         self.teacher_unavailable_cache = {}
-        self.selected_algorithm = "brkga"  # Standart algoritm
+        
         self._drag_indexes = None
         self._sanpin_checker = None
 
@@ -1467,42 +1465,7 @@ class ManualScheduleWindow(QWidget):
 
         main_layout.addWidget(class_selector_panel)
 
-        # Hafta tanlash paneli (Numerator/Denominator)
-        week_panel = QWidget()
-        week_panel.setStyleSheet("background: #34495E; border-radius: 3px;")
-        week_layout = QHBoxLayout()
-        week_layout.setContentsMargins(10, 3, 10, 3)
-        week_panel.setLayout(week_layout)
-
-        week_label = QLabel("📅 Hafta:")
-        week_label.setStyleSheet("color: white; font-size: 11px; font-weight: bold;")
-        week_layout.addWidget(week_label)
-
-        self.week_combo = QComboBox()
-        self.week_combo.addItems(["1-hafta (Toq — Numerator)", "2-hafta (Juft — Denominator)"])
-        self.week_combo.setStyleSheet("""
-            QComboBox { background: white; color: #2C3E50; padding: 4px 8px; 
-                       border-radius: 3px; font-size: 11px; font-weight: bold; min-width: 200px; }
-            QComboBox:hover { background: #ECF0F1; }
-            QComboBox::drop-down { border: none; padding-right: 8px; }
-            QComboBox::down-arrow { image: none; border: none; }
-            QComboBox QAbstractItemView { background: white; color: #2C3E50; 
-                                          selection-background-color: #3498DB; selection-color: white;
-                                          border: 1px solid #BDC3C7; padding: 2px; }
-            QComboBox QAbstractItemView::item { padding: 6px 10px; min-height: 24px; }
-        """)
-        self.week_combo.currentIndexChanged.connect(self._on_week_changed)
-        week_layout.addWidget(self.week_combo)
-
-        week_layout.addStretch()
-
-        self.week_info = QLabel("Toq haftalar: 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31")
-        self.week_info.setStyleSheet("color: #BDC3C7; font-size: 10px;")
-        week_layout.addWidget(self.week_info)
-
-        main_layout.addWidget(week_panel)
-
-        # Jadval — TimetableGrid (drag-drop qo'llab-quvvatlash bilan)
+                # Jadval — TimetableGrid (drag-drop qo'llab-quvvatlash bilan)
         self.timetable = TimetableGrid(self)
         self.timetable.setColumnCount(42)
         self.timetable.setRowCount(16)
@@ -1615,66 +1578,13 @@ class ManualScheduleWindow(QWidget):
         self.timetable.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         # Kontekst menusi allaqachon ulangan (line 1592-1593)
 
-    def _on_week_changed(self, index):
-        """Hafta almashtirilganda"""
-        # Joriy haftaning ma'lumotlarini saqlash
-        self._save_current_week_data()
-
-        # Yangi haftaga o'tish
-        self.current_week_index = index
-
-        # Ma'lumotlarni yuklash
-        self._load_week_data(index)
-
-        # Hafta info matnini yangilash
-        if index == 0:
-            self.week_info.setText("Toq haftalar: 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31")
-        else:
-            self.week_info.setText("Juft haftalar: 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30")
-
     def _save_current_week_data(self):
         """Joriy haftaning ma'lumotlarini saqlash"""
-        if self.current_week_index == 0:
-            self.timetable_data = self._get_grid_data()
-        else:
-            self.timetable_data_week2 = self._get_grid_data_from_grid()
-
-    def _load_week_data(self, week_index):
-        """Hafta ma'lumotlarini yuklash"""
-        if week_index == 0:
-            data = self.timetable_data
-        else:
-            data = self.timetable_data_week2
-
-        # Jadvalni tozalash
-        for row in range(self.timetable.rowCount()):
-            for col in range(self.timetable.columnCount()):
-                self.timetable.removeCellWidget(row, col)
-                self.timetable.setItem(row, col, QTableWidgetItem(""))
-
-        # Ma'lumotlarni joylashtirish
-        for (class_id, day, period), lesson_data in data.items():
-            row = self._class_row_map.get(class_id)
-            if row is None:
-                continue
-            col = day * self.PERIODS_PER_DAY + period
-            item = QTableWidgetItem("")
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            item.setData(Qt.ItemDataRole.UserRole, lesson_data)
-            item.setBackground(QColor("transparent"))
-            self.timetable.setItem(row, col, item)
-            card = ScheduledLessonCard(lesson_data)
-            self.timetable.setCellWidget(row, col, card)
-
-        self.load_unplaced_lessons()
+        self.timetable_data = self._get_grid_data()
 
     def _get_grid_data(self):
         """Joriy haftaning timetable_data dan olish"""
-        if self.current_week_index == 0:
-            return dict(self.timetable_data)
-        else:
-            return dict(self.timetable_data_week2)
+        return dict(self.timetable_data)
 
     def _get_grid_data_from_grid(self):
         """Jadval widgetidan to'g'ridan-to'g'ri ma'lumot olish"""
@@ -1768,12 +1678,11 @@ class ManualScheduleWindow(QWidget):
                 return
 
             # Bazadan saqlangan jadvalni yuklash — 1-hafta va 2-hafta
-            saved_w1 = self.db.load_scheduled_lessons(week_index=0)
-            saved_w2 = self.db.load_scheduled_lessons(week_index=1)
+            saved_w1 = self.db.load_scheduled_lessons()
 
             if saved_w1:
                 self.timetable_data = saved_w1
-                self.timetable_data_week2 = saved_w2 if saved_w2 else {}
+                
                 # Widgetlarni qayta yaratish
                 for (class_id, day, period), info in saved_w1.items():
                     row = None
@@ -1804,9 +1713,7 @@ class ManualScheduleWindow(QWidget):
                         self.placed_counts[placed_key] = self.placed_counts.get(placed_key, 0) + 1
 
                 self.status_label.setText(
-                    f"✅ Yuklandi: {len(self.classes)} sinf | "
-                    f"1-hafta: {len(saved_w1)} dars | "
-                    f"2-hafta: {len(saved_w2) if saved_w2 else 0} dars"
+                    f"✅ Yuklandi: {len(self.classes)} sinf | {len(saved_w1)} dars"
                 )
             else:
                 self.status_label.setText(f"✅ Yuklandi: {len(self.classes)} ta sinf")
@@ -1920,36 +1827,13 @@ class ManualScheduleWindow(QWidget):
             print(f"Avtomatik saqlash xatolik: {e}")
 
     def _on_auto(self):
-        """Avtomatik jadval tuzish — soatlarni tekshirish + algoritm tanlash"""
+        """Avtomatik jadval tuzish — soatlarni tekshirish"""
         # Avval soatlarni tekshirish
         if not self._check_hours_match():
             return
 
         # Vakantlarni tekshirish — o'qituvchi yetishmayotgan fanlar
         if not self._check_vacants():
-            return
-
-        msg = QMessageBox(self)
-        msg.setWindowTitle("🔧 Algoritm tanlash")
-        msg.setText("Qaysi algoritmdan foydalaniladi?")
-        msg.setInformativeText(
-            "⚡ BRKGA — sifatli, lekin sekinroq (30-60 soniya)\n"
-            "🔙 Backtracking — tez, lekin sifat pastroq"
-        )
-        msg.setIcon(QMessageBox.Icon.Question)
-
-        brkga_btn = msg.addButton("⚡ BRKGA (tavsiya etiladi)", QMessageBox.ButtonRole.AcceptRole)
-        bt_btn = msg.addButton("🔙 Backtracking", QMessageBox.ButtonRole.ActionRole)
-        msg.addButton(QMessageBox.StandardButton.Cancel)
-
-        msg.exec()
-        clicked = msg.clickedButton()
-
-        if clicked == brkga_btn:
-            self.selected_algorithm = "brkga"
-        elif clicked == bt_btn:
-            self.selected_algorithm = "backtracking"
-        else:
             return
 
         self.auto_generate_all()
@@ -2171,11 +2055,10 @@ class ManualScheduleWindow(QWidget):
             self._save_current_week_data()
 
             # 1-haftani saqlash
-            self.db.save_scheduled_lessons(self.timetable_data, week_index=0)
-            # 2-haftani saqlash
-            self.db.save_scheduled_lessons(self.timetable_data_week2, week_index=1)
+            self.db.save_scheduled_lessons(self.timetable_data)
+            
 
-            total = len(self.timetable_data) + len(self.timetable_data_week2)
+            total = len(self.timetable_data)
             self.status_label.setText(
                 f"💾 Bazaga saqlandi: {total} ta dars (2 hafta)"
             )
@@ -2183,7 +2066,7 @@ class ManualScheduleWindow(QWidget):
                 self, "Saqlandi",
                 f"✅ Jadval bazaga muvaffaqiyatli saqlandi!\n\n"
                 f"📊 1-hafta: {len(self.timetable_data)} ta dars\n"
-                f"📊 2-hafta: {len(self.timetable_data_week2)} ta dars"
+                f"📊 {total} ta dars saqlandi"
             )
         except Exception as e:
             QMessageBox.warning(self, "Xatolik", f"Bazaga saqlash xatolik:\n{str(e)}")
@@ -2260,10 +2143,9 @@ class ManualScheduleWindow(QWidget):
     def _load_from_database(self):
         """Bazadan jadvalni yuklash"""
         # Har bir haftani alohida yuklash (kalitlar ustma-ust ketmasligi uchun)
-        saved_w1 = self.db.load_scheduled_lessons(week_index=0)
-        saved_w2 = self.db.load_scheduled_lessons(week_index=1)
+        saved_w1 = self.db.load_scheduled_lessons()
         
-        if not saved_w1 and not saved_w2:
+        if not saved_w1:
             QMessageBox.information(self, "Ma'lumot", "Bazada saqlangan jadval yo'q!")
             return
 
@@ -2276,7 +2158,6 @@ class ManualScheduleWindow(QWidget):
                     self.timetable.removeCellWidget(row, col)
                     widget.deleteLater()
         self.timetable_data = {}
-        self.timetable_data_week2 = {}
         self.placed_counts = {}
 
         # 1-haftani yuklash
@@ -2308,16 +2189,13 @@ class ManualScheduleWindow(QWidget):
             card = ScheduledLessonCard(info)
             self.timetable.setCellWidget(row, col, card)
 
-        # 2-haftani yuklash
-        for (class_id, day, period), info in saved_w2.items():
-            info['class_name'] = next((cls[1] for cls in self.classes if cls[0] == class_id), '')
-            self.timetable_data_week2[(class_id, day, period)] = info
+
 
         self.recalculate_table_sizes()
         self.load_unplaced_lessons()
 
         self.status_label.setText(
-            f"💾 Bazadan yuklandi: {len(saved_w1)} + {len(saved_w2)} ta dars"
+            f"💾 Bazadan yuklandi: {len(saved_w1)} ta dars"
         )
 
     def _on_clear(self):
@@ -2894,7 +2772,7 @@ class ManualScheduleWindow(QWidget):
 
         # Haqiqiy jadvaldan placementlarni hisoblash (kasrli fanlar uchun)
         timetable_subject_counts = {}
-        for tt_data in [self.timetable_data, self.timetable_data_week2]:
+        for tt_data in [self.timetable_data]:
             for (cid, day, period), ldata in tt_data.items():
                 sub_name = ldata.get('subject_name', '')
                 key = (cid, sub_name)
@@ -3758,10 +3636,6 @@ class ManualScheduleWindow(QWidget):
             return
 
         # Alohida 0,5 soatlik fanlarni aniqlash — kasrli soatlar mavjud bo'lsa
-        standalone_half = self._ask_standalone_half_subjects()
-        if standalone_half is None:
-            return  # Bekor qilindi
-
         # Jadvanni tozalash
         self.timetable.clearContents()
         for row in range(self.timetable.rowCount()):
@@ -3778,8 +3652,7 @@ class ManualScheduleWindow(QWidget):
         self._progress_dialog = ProgressDialog(len(self.classes), self)
 
         # Background thread ishga tushirish
-        algorithm = getattr(self, 'selected_algorithm', 'brkga')
-        self._schedule_worker = ScheduleWorker(self.classes, self.db, algorithm)
+        self._schedule_worker = ScheduleWorker(self.classes, self.db)
         self._schedule_worker.progress.connect(self._on_schedule_progress)
         self._schedule_worker.finished.connect(self._on_schedule_finished)
         self._schedule_worker.error.connect(self._on_schedule_error)
@@ -3802,11 +3675,9 @@ class ManualScheduleWindow(QWidget):
             self._progress_dialog.raise_()
             self._progress_dialog.activateWindow()
 
-    def _on_schedule_finished(self, all_data, conflicts, placed_count, week2_data=None):
+    def _on_schedule_finished(self, all_data, conflicts, placed_count):
         """Worker tugadi — natijalarni jadvalga qo'llash"""
-        algorithm = getattr(self, 'selected_algorithm', 'brkga')
-
-        # 1-Hafta (week_index=0)
+        # Jadvalni qo'llash
         for (class_id, day, period), lesson_data in all_data.items():
             row = self._class_row_map.get(class_id)
             if row is None:
@@ -3827,25 +3698,10 @@ class ManualScheduleWindow(QWidget):
             card = ScheduledLessonCard(lesson_data)
             self.timetable.setCellWidget(row, col, card)
 
-        # 2-Hafta (week_index=1) — xotirada saqlash
-        if week2_data:
-            self.week2_data = week2_data
-            self.timetable_data_week2 = week2_data.copy()
-            # 2-hafta placementlarini ham qo'shish (kasrli fanlar uchun)
-            for (class_id, day, period), lesson_data in week2_data.items():
-                placed_key = (class_id, lesson_data['lesson_id'])
-                self.placed_counts[placed_key] = self.placed_counts.get(placed_key, 0) + 1
-
-        self._invalidate_drag_indexes()
-        self.recalculate_table_sizes()
-        self.load_unplaced_lessons()
-
-        # Bazaga saqlash — 1-hafta va 2-hafta
+        # Jadval ma'lumotlari
+        # Bazaga saqlash
         try:
-            self.db.save_scheduled_lessons(self.timetable_data, week_index=0)
-            if hasattr(self, 'week2_data') and self.week2_data:
-                self.db.save_scheduled_lessons(self.week2_data, week_index=1)
-                print(f"✅ 2-hafta saqlandi: {len(self.week2_data)} ta dars")
+            self.db.save_scheduled_lessons(self.timetable_data)
         except Exception as e:
             print(f"Avtomatik saqlash xatolik: {e}")
 
@@ -3876,14 +3732,14 @@ class ManualScheduleWindow(QWidget):
             avg_score = sum(r.get('score', 0) for r in sanpin_results) // max(len(sanpin_results), 1)
             total_errors = sum(len(r.get('errors', [])) for r in sanpin_results)
             total_warnings = sum(len(r.get('warnings', [])) for r in sanpin_results)
-            algo_name = "BRKGA" if algorithm == "brkga" else "Backtracking"
+            algo_name = "Greedy + Backtracking"
             self.status_label.setText(
                 f"⚡ {algo_name} | {placed_count} ta dars | "
                 f"SanPIN: {avg_score}% | Xatolar: {total_errors} | Ogohlantirishlar: {total_warnings}"
             )
             msg = f"{placed_count} ta dars joylashtirildi | SanPIN: {avg_score}%"
         else:
-            algo_name = "BRKGA" if algorithm == "brkga" else "Backtracking"
+            algo_name = "Greedy + Backtracking"
             self.status_label.setText(f"⚡ {algo_name} | {placed_count} ta dars")
             msg = f"{placed_count} ta dars joylashtirildi"
 
@@ -3913,97 +3769,6 @@ class ManualScheduleWindow(QWidget):
                 self.timetable_data, self.classes, self.db
             )
 
-    def _ask_standalone_half_subjects(self):
-        """
-        Kasrli soatli fanlar mavjud bo'lsa, foydalanuvchidan so'rash:
-        Qaysi fanlar alohida 0,5 soatlik dars?
-        True = saqlandi, False = barchasi juftlik, None = bekor qilindi
-        """
-        from PyQt6.QtWidgets import QCheckBox, QScrollArea
-
-        # Barcha sinflardagi 0,5 soatlik fanlarni yig'ish
-        all_half = {}  # {subject_name: subject_id}
-
-        for cls in self.classes:
-            class_id = cls[0]
-            fractional = self.db.get_fractional_subjects(class_id)
-            for f in fractional:
-                if f['is_half']:
-                    name = f['subject_name']
-                    if name not in all_half:
-                        all_half[name] = f['subject_id']
-
-        if not all_half:
-            return False
-
-        # Checkbox'li dialog yaratish
-        dialog = QDialog(self)
-        dialog.setWindowTitle("📋 0,5 soatlik fanlar")
-        dialog.setMinimumWidth(400)
-
-        layout = QVBoxLayout()
-
-        # Sarlavha
-        header = QLabel("0,5 soatlik fanlar topildi:")
-        header.setStyleSheet("font-weight: bold; font-size: 14px;")
-        layout.addWidget(header)
-
-        desc = QLabel(
-            "Qaysi fanlar alohida 0,5 soatlik dars?\n"
-            "(1-haftada qo'yiladi, 2-haftada YO'Q)"
-        )
-        layout.addWidget(desc)
-
-        # Checkbox'lar
-        checkboxes = {}
-        for name, sid in sorted(all_half.items()):
-            cb = QCheckBox(f"{name}")
-            cb.setChecked(False)  # Standart: barchasi juftlik
-            checkboxes[name] = cb
-            layout.addWidget(cb)
-
-        # Tugmalar
-        btn_layout = QHBoxLayout()
-        ok_btn = QPushButton("✅ Tasdiqlash")
-        cancel_btn = QPushButton("❌ Bekor qilish")
-        btn_layout.addWidget(ok_btn)
-        btn_layout.addWidget(cancel_btn)
-        layout.addLayout(btn_layout)
-
-        # Signallar
-        def on_ok():
-            dialog.accept()
-
-        def on_cancel():
-            dialog.reject()
-
-        ok_btn.clicked.connect(on_ok)
-        cancel_btn.clicked.connect(on_cancel)
-
-        dialog.setLayout(layout)
-
-        result = dialog.exec()
-
-        if result == QDialog.DialogCode.Accepted:
-            # Tanlangan fanlarni saqlash
-            selected_ids = []
-            for name, cb in checkboxes.items():
-                if cb.isChecked():
-                    selected_ids.append(all_half[name])
-
-            if selected_ids:
-                # Tanlangan fanlarni barcha sinflar uchun saqlash
-                for cls in self.classes:
-                    self.db.save_standalone_half_subjects(cls[0], selected_ids)
-                return True
-            else:
-                # Barchasi juftlik
-                for cls in self.classes:
-                    self.db.save_standalone_half_subjects(cls[0], [])
-                return False
-        else:
-            return None
-
     def _on_schedule_error(self, error_msg):
         """Worker xatolik"""
         import traceback as tb
@@ -4018,7 +3783,7 @@ class ManualScheduleWindow(QWidget):
         # Joriy haftaning ma'lumotlarini saqlash
         self._save_current_week_data()
 
-        if not self.timetable_data and not self.timetable_data_week2:
+        if not self.timetable_data:
             QMessageBox.warning(self, "Xatolik", "Jadval bo'sh!")
             return
 
@@ -4039,7 +3804,7 @@ class ManualScheduleWindow(QWidget):
                 'saved_at': datetime.now().isoformat(),
                 'classes': [],
                 'timetable_week1': {},
-                'timetable_week2': {}
+                # week2 removed
             }
 
             # Sinflar
@@ -4068,21 +3833,7 @@ class ManualScheduleWindow(QWidget):
                     'weekly_hours': info.get('weekly_hours'),
                 }
 
-            # 2-hafta jadvali
-            for (class_id, day, period), info in self.timetable_data_week2.items():
-                key = f"{class_id}_{day}_{period}"
-                save_data['timetable_week2'][key] = {
-                    'lesson_id': info.get('lesson_id'),
-                    'subject_name': info.get('subject_name'),
-                    'subject_short': info.get('subject_short'),
-                    'subject_id': info.get('subject_id'),
-                    'teacher_name': info.get('teacher_name'),
-                    'teacher_id': info.get('teacher_id'),
-                    'class_id': info.get('class_id'),
-                    'class_name': info.get('class_name'),
-                    'color': info.get('color'),
-                    'weekly_hours': info.get('weekly_hours'),
-                }
+
 
             # Joylashtirilgan darslar soni
             save_data['placed_counts'] = {}
@@ -4092,7 +3843,7 @@ class ManualScheduleWindow(QWidget):
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(save_data, f, ensure_ascii=False, indent=2)
 
-            total = len(self.timetable_data) + len(self.timetable_data_week2)
+            total = len(self.timetable_data)
             self.status_label.setText(f"💾 Saqlandi: {total} ta dars → {filename}")
             QMessageBox.information(
                 self, "Saqlandi",

@@ -754,7 +754,7 @@ class DarsJadvali(QMainWindow):
             ("🎯 Teng taqsimot", "Kunlar bo'yicha darslarni teng taqsimlash", "#27AE60"),
             # 🔵 Boshqaruv
             ("🖱️ Drag & drop", "Sichqoncha bilan joylashtirish va SWAP almashtirish", "#3498DB"),
-            ("🔄 2-haftalik jadval", "Toq/Juft haftalar, kasrli soatlar (0.5, 1.5)", "#3498DB"),
+            ("📅 1-haftalik jadval", "Barcha darslar 1 haftaga joylashtiriladi", "#3498DB"),
             ("👨‍🏫 O'qituvchi boshq.", "Band soatlar, metodik kun, sinf rahbari", "#3498DB"),
             ("🏫 Sinflar boshqaruvi", "1-11 sinflar, ish kunlari (5/6 kun)", "#3498DB"),
             ("🚪 Xonalar boshqaruvi", "Laboratoriyalar, sport zallari", "#3498DB"),
@@ -1109,20 +1109,20 @@ class DarsJadvali(QMainWindow):
             "<b style='color: #27AE60; font-size: 14px;'>2.6. 📝 Dars biriktirish</b><br>"
             "\"Dars biriktirish\" tugmasini bosing.<br>"
             "&nbsp;&nbsp;&nbsp;• Sinfni tanlang (chap tomonda)<br>"
-            "&nbsp;&nbsp;&nbsp;• Fan uchun <b>haftalik soat</b> ni kiriting (kasrli: 0.5, 1.5)<br>"
+            "&nbsp;&nbsp;&nbsp;• Fan uchun <b>haftalik soat</b> ni kiriting (butun son: 1, 2, 3...)<br>"
             "&nbsp;&nbsp;&nbsp;• O'qituvchini tanlang<br>"
             "&nbsp;&nbsp;&nbsp;• Tayanch reja yuklangan bo'lsa, soatlar avtomatik to'ldiriladi<br>"
-            "&nbsp;&nbsp;&nbsp;• <b>Kasrli soatlar:</b> 0.5, 1.0, 1.5, 2.0 va boshqa qiymatlar kiritish mumkin<br>"
-            "&nbsp;&nbsp;&nbsp;• Ayrim fanlar boshqa fan hisobidan o'qitilishi mumkin (masalan: 1.5 soat Geografiya + 0.5 soat Iqtisodiy bilim)<br><br>"
+            "&nbsp;&nbsp;&nbsp;• <b>Butun soatlar:</b> 1, 2, 3, 4 va boshqa butun sonlar kiritish mumkin<br>"
+            "<br>"
 
             # ===== 3. JADVAL YARATISH =====
             "<b style='color: #E74C3C; font-size: 15px;'>3. DARS JADVALINI YARATISH</b><br><br>"
 
             "<b style='color: #8E44AD; font-size: 14px;'>3.1. ⚡ Avtomatik usul</b><br>"
             "\"⚡ AVTOMATIK JADVAL\" tugmasini bosing.<br>"
-            "&nbsp;&nbsp;&nbsp;• Hybrid algoritm: BRKGA (genetik) + Backtracking ishlatiladi<br>"
+            "&nbsp;&nbsp;&nbsp;• Algoritm: Greedy + Backtracking — barcha darslar to'liq joylashtiriladi<br>"
             "&nbsp;&nbsp;&nbsp;• 2-30 soniyada tayyor (sinflar soniga qarab)<br>"
-            "&nbsp;&nbsp;&nbsp;• 2-haftalik jadval avtomatik yaratiladi<br>"
+            "&nbsp;&nbsp;&nbsp;• 1-haftalik jadval avtomatik yaratiladi<br>"
             "&nbsp;&nbsp;&nbsp;• Kelajak soati sinf rahbarlariga <b>Juma kuni, 1-darsda</b> avtomatik qo'yiladi<br><br>"
 
             "<b style='color: #8E44AD; font-size: 14px;'>3.2. ✋ Qo'lda usul</b><br>"
@@ -1131,14 +1131,6 @@ class DarsJadvali(QMainWindow):
             "&nbsp;&nbsp;&nbsp;• Mavjud darsning ustiga qo'ysangiz — <b>SWAP</b> (almashtirish) taklif qilinadi<br>"
             "&nbsp;&nbsp;&nbsp;• Bo'sh joyga qo'ysangiz — dars o'rniga qo'yiladi<br>"
             "&nbsp;&nbsp;&nbsp;• O'ng tugma — kontekst menyusi (ko'chirish, o'chirish)<br><br>"
-
-            "<b style='color: #8E44AD; font-size: 14px;'>3.3. 🔄 2-haftalik jadval</b><br>"
-            "SmartDJ3 ikki haftalik jadval tuzadi:<br>"
-            "&nbsp;&nbsp;&nbsp;• <b>1-hafta (Toq)</b> — toq haftalar uchun (1, 3, 5...)<br>"
-            "&nbsp;&nbsp;&nbsp;• <b>2-hafta (Juft)</b> — juft haftalar uchun (2, 4, 6...)<br>"
-            "&nbsp;&nbsp;&nbsp;• <b>1.5 soatlik fanlar:</b> 1-haftada 2 dars, 2-haftada 1 dars<br>"
-            "&nbsp;&nbsp;&nbsp;• <b>0.5 soatlik fanlar (tarkibida):</b> 1-haftada 0 dars, 2-haftada 1 dars<br>"
-            "&nbsp;&nbsp;&nbsp;• <b>Alohida 0.5 soatlik fan:</b> jadval tuzishdan oldin dastur \"0.5 soatlik darslar\" ro'yxatidan belgilashni so'raydi<br><br>"
 
             "<b style='color: #8E44AD; font-size: 14px;'>3.4. 🎯 Teng taqsimot</b><br>"
             "Dastur kunlar bo'yicha darslarni imkon qadar teng taqsimlaydi.<br>"
@@ -1149,7 +1141,7 @@ class DarsJadvali(QMainWindow):
             "<b style='color: #E74C3C; font-size: 15px;'>4. JADVAL BOSHQARISHI</b><br><br>"
 
             "<b style='color: #3498DB; font-size: 14px;'>4.1. Hafta tanlash</b><br>"
-            "\"Hafta:\" dropdownidan 1-hafta yoki 2-haftani tanlang.<br>"
+            "Jadval 1 haftaga tuziladi.<br>"
             "&nbsp;&nbsp;&nbsp;• Faqat tanlangan hafta ko'rsatiladi<br>"
             "&nbsp;&nbsp;&nbsp;• Saqlash har ikkala haftani saqlaydi<br><br>"
 
@@ -1205,7 +1197,7 @@ class DarsJadvali(QMainWindow):
             "<b style='color: #1ABC9C; font-size: 14px;'>7.2. Hafta tanlash</b><br>"
             "Export dialogida \"Hafta tanlash\" qismidan tanlang:<br>"
             "&nbsp;&nbsp;&nbsp;• <b>1-hafta</b> — faqat toq haftalar jadvali<br>"
-            "&nbsp;&nbsp;&nbsp;• <b>2-hafta</b> — faqat juft haftalar jadvali<br>"
+            ""
             "&nbsp;&nbsp;&nbsp;• <b>Ikkalasi</b> — ikkala hafta bitta faylda<br><br>"
 
             "<b style='color: #1ABC9C; font-size: 14px;'>7.3. Sozlamalar</b><br>"
@@ -1219,7 +1211,7 @@ class DarsJadvali(QMainWindow):
             "<b style='color: #E74C3C; font-size: 15px;'>8. MASLAHATLAR</b><br>"
             "&nbsp;&nbsp;&nbsp;• Bazani muntazam zaxiralab turing<br>"
             "&nbsp;&nbsp;&nbsp;• Avtomatik jadvaldan oldin barcha ma'lumotlarni tekshiring<br>"
-            "&nbsp;&nbsp;&nbsp;• 0.5 soatlik fanlar uchun \"Dars biriktirish\" da 0.5 kiriting<br>"
+            ""
             "&nbsp;&nbsp;&nbsp;• Monitoring demo rejimi bilan jadvalni oldindan ko'ring<br>"
             "&nbsp;&nbsp;&nbsp;• Muammo chiqsa, \"📄 Shartlar\" sahifasidan muallif bilan bog'laning<br>"
             "&nbsp;&nbsp;&nbsp;• Export qilishdan oldin hafta tanlaganingizga ishonch hosil qiling<br><br>"
@@ -1523,7 +1515,7 @@ class DarsJadvali(QMainWindow):
             return
 
         # Bazadan mavjud jadvalni yuklash — faqat 1-hafta (week_index=0)
-        saved = self.db.load_scheduled_lessons(week_index=0)
+        saved = self.db.load_scheduled_lessons()
         if not saved:
             QMessageBox.warning(
                 self, "Xatolik",
@@ -1604,18 +1596,16 @@ class DarsJadvali(QMainWindow):
             for w in QApplication.topLevelWidgets():
                 if isinstance(w, ManualScheduleWindow) and w.isVisible():
                     td = dict(w.timetable_data)
-                    td2 = dict(w.timetable_data_week2) if hasattr(w, 'timetable_data_week2') and w.timetable_data_week2 else None
+                    td2 = None
                     cls = list(w.classes)
                     break
 
             if not td:
-                saved_w1 = self.db.load_scheduled_lessons(week_index=0)
+                saved_w1 = self.db.load_scheduled_lessons()
                 if saved_w1:
                     td = saved_w1
                     cls = self.db.get_all_classes()
-                saved_w2 = self.db.load_scheduled_lessons(week_index=1)
-                if saved_w2:
-                    td2 = saved_w2
+                # week2 removed
 
             if not td:
                 QMessageBox.warning(self, "Xatolik",

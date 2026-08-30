@@ -276,7 +276,8 @@ class TimetableScheduler:
         t_id = lesson['teacher_id']
         class_id = lesson['class_id']
         subject = lesson['subject_name']
-        working_days = lesson['working_days']
+        # FIX: working_days kalit yo'q bo'lsa, WORKING_DAYS doimiyni ishlatish
+        working_days = lesson.get('working_days', WORKING_DAYS)
         class_level = lesson['class_level']
 
         blocked = self.blocked_slots.get(t_id, set())
@@ -346,6 +347,10 @@ class TimetableScheduler:
         subject = lesson['subject_name']
         class_level = lesson['class_level']
         difficulty = self.sanpin.get_difficulty(subject)
+
+        # FIX: Xavfsizlik tekshiruvi
+        if 'working_days' not in lesson:
+            lesson['working_days'] = WORKING_DAYS
 
         scored = []
 
@@ -541,7 +546,8 @@ class TimetableScheduler:
         for lesson in failed_lessons:
             t_id = lesson['teacher_id']
             class_id = lesson['class_id']
-            working_days = lesson['working_days']
+            # FIX: working_days kalit yo'q bo'lsa, WORKING_DAYS doimiyni ishlatish
+            working_days = lesson.get('working_days', WORKING_DAYS)
 
             # 1-urush: Barcha cheklovlarni hisobga olgan holda
             placed = False

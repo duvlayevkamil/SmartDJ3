@@ -225,7 +225,7 @@ class BRKGAScheduler:
                 if placed:
                     break
 
-            # 2. Bo'sh slot + teacher band (ziddiyat bilan) + kunlik takrorlanish
+            # 2. Bo'sh slot + kunlik takrorlanish (TEKSHIRUV BILAN)
             if not placed:
                 for day in range(working_days):
                     for period in range(daily_limits[day]):
@@ -233,6 +233,11 @@ class BRKGAScheduler:
                             continue
                         if day_subjects[day].count(sub) >= max_daily_occurrences.get(sub, 1):
                             continue
+                        # O'qituvchi bandligini tekshirish
+                        if teacher_constraints and subject_teacher_map:
+                            tid = subject_teacher_map.get(sub)
+                            if tid and (tid, day, period) in teacher_constraints:
+                                continue
                         timetable[period][day] = sub
                         remaining[sub] -= 1
                         day_subjects[day].append(sub)
@@ -251,6 +256,11 @@ class BRKGAScheduler:
                         # Yangi dars kunlik takrorlanishni tekshirish
                         if day_subjects[day].count(sub) >= max_daily_occurrences.get(sub, 1):
                             continue
+                        # Yangi dars uchun o'qituvchi bandligini tekshirish
+                        if teacher_constraints and subject_teacher_map:
+                            tid = subject_teacher_map.get(sub)
+                            if tid and (tid, day, period) in teacher_constraints:
+                                continue
                         for new_day in range(working_days):
                             for new_period in range(daily_limits[new_day]):
                                 if new_day == day and new_period == period:
@@ -260,6 +270,11 @@ class BRKGAScheduler:
                                 # Ko'chirilgan dars kunlik takrorlanishini tekshirish
                                 if day_subjects[new_day].count(existing) >= max_daily_occurrences.get(existing, 1):
                                     continue
+                                # Ko'chirilgan dars uchun o'qituvchi bandligini tekshirish
+                                if teacher_constraints and subject_teacher_map:
+                                    exist_tid = subject_teacher_map.get(existing)
+                                    if exist_tid and (exist_tid, new_day, new_period) in teacher_constraints:
+                                        continue
                                 timetable[new_period][new_day] = existing
                                 timetable[period][day] = sub
                                 remaining[sub] -= 1
@@ -283,6 +298,11 @@ class BRKGAScheduler:
                             continue
                         if day_subjects[day].count(sub) >= max_daily_occurrences.get(sub, 1):
                             continue
+                        # O'qituvchi bandligini tekshirish
+                        if teacher_constraints and subject_teacher_map:
+                            tid = subject_teacher_map.get(sub)
+                            if tid and (tid, day, period) in teacher_constraints:
+                                continue
                         timetable[period][day] = sub
                         remaining[sub] -= 1
                         day_subjects[day].append(sub)

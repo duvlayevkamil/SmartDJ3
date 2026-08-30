@@ -923,7 +923,30 @@ class TimetableScheduler:
                     if key in all_data:
                         del all_data[key]
 
-                for i, entry in enumerate(entries):
+                # Darslarni 0..N-1 ga siljitish — O'QITUVCHI BANDLIGINI TEKSHIRISH
+                placed = []
+                skipped = []
+                for entry in entries:
+                    teacher_id = entry.get('teacher_id', 0)
+                    target_slot = len(placed)
+                    if teacher_id and (teacher_id, day, target_slot) in teacher_schedule:
+                        skipped.append(entry)
+                    else:
+                        placed.append(entry)
+                for entry in skipped:
+                    teacher_id = entry.get('teacher_id', 0)
+                    found = False
+                    for p in range(PERIODS_PER_DAY):
+                        if p < len(placed):
+                            continue
+                        if teacher_id and (teacher_id, day, p) in teacher_schedule:
+                            continue
+                        placed.append(entry)
+                        found = True
+                        break
+                    if not found:
+                        placed.append(entry)
+                for i, entry in enumerate(placed):
                     all_data[(class_id, day, i)] = entry
 
     def generate_all_class_timetables(self, classes, db_manager, cancel_flag=None, progress_callback=None):
@@ -1294,9 +1317,29 @@ class TimetableScheduler:
                     key = (class_id, day, period)
                     if key in all_data:
                         del all_data[key]
-
-                # Darslarni 0..N-1 ga siljitish
+# Darslarni 0..N-1 ga siljitish — O'QITUVCHI BANDLIGINI TEKSHIRISH
+                placed_entries = []
+                skip_entries = []
                 for i, (old_period, entry) in enumerate(day_entries):
+                    teacher_id = entry.get('teacher_id', 0)
+                    if teacher_id and (teacher_id, day, i) in teacher_schedule:
+                        skip_entries.append(entry)
+                    else:
+                        placed_entries.append(entry)
+                for entry in skip_entries:
+                    teacher_id = entry.get('teacher_id', 0)
+                    placed = False
+                    for p in range(PERIODS_PER_DAY):
+                        if (class_id, day, p) in all_data:
+                            continue
+                        if teacher_id and (teacher_id, day, p) in teacher_schedule:
+                            continue
+                        placed_entries.append(entry)
+                        placed = True
+                        break
+                    if not placed:
+                        placed_entries.append(entry)
+                for i, entry in enumerate(placed_entries):
                     all_data[(class_id, day, i)] = entry
 
         # ============================================================

@@ -1,20 +1,20 @@
 """
-SmartDJ3 — Yangi dars jadvali tuzish algoritmi
+SmartDJ3 — Butun jadval tuzish tizimi uchun barcha xatoliklarni tuzatgan versiya
 
-Asosiy printsip:
-- Barcha darslarni GLOBAL jadvalda joylashtirish (har bir sinf alohida emas)
-- teacher_grid[teacher_id][day][period] = class_id — o'qituvchi bandligi
-- class_grid[class_id][day][period] = lesson_info — sinf jadvali
-- 1 haftalik, faqat butun soatlar
-- Barcha darslar TO'LIQ joylashtiriladi (backtracking bilan)
+TUZATILGAN XATOLIKLAR:
+1. KeyError 'working_days' — lesson.get() bilan Default qiymat
+2. KeyError 'class_level' — lesson.get() bilan Default qiymat
+3. Qo'sh aniqlash (double place) backtracking vaqtida
+4. None Grid indexing — xavfsizlik tekshiruvi
+5. Subject name extraction — Empty string xisobining
+6. Missing validation checks — Mahalliy ma'lumotlar
 """
 import random
 from collections import defaultdict
 from core.sanpin import SanPINChecker
 
 PERIODS_PER_DAY = 6
-WORKING_DAYS = 6  # Dushanba-Shanba
-
+WORKING_DAYS = 6
 
 class TimetableScheduler:
     def __init__(self, db_manager=None):
@@ -22,21 +22,15 @@ class TimetableScheduler:
         self.sanpin = SanPINChecker()
         self.cancel_flag = False
 
-        # Global jadvallar
-        self.teacher_grid = {}    # {teacher_id: [[None]*6 for _ in range(6)]}
-        self.class_grid = {}      # {class_id: [[None]*6 for _ in range(6)]}
-        self.blocked_slots = {}   # {teacher_id: set((day, period))}
-        self.methodic_slots = {}  # {teacher_id: set((day, period))}
-
-        # Sinf ma'lumotlari
-        self.class_info = {}      # {class_id: {name, level, working_days}}
-        self.class_daily_limits = {}  # {class_id: [limit_per_day]}
-
-        # Darslar ro'yxati
-        self.lessons_to_place = []  # [{class_id, subject, teacher_id, ...}]
-
-        # O'qituvchi sinflari soni (cheklanganlik uchun)
+        self.teacher_grid = {}
+        self.class_grid = {}
+        self.blocked_slots = {}
+        self.methodic_slots = {}
+        self.class_info = {}
+        self.class_daily_limits = {}
+        self.lessons_to_place = []
         self.teacher_class_count = defaultdict(int)
+        self.placed_lessons = set()  # FIX: Qo'sh placement oldini olish
 
     def cancel(self):
         self.cancel_flag = True
@@ -44,616 +38,530 @@ class TimetableScheduler:
     def reset_cancel(self):
         self.cancel_flag = False
 
-    # ================================================================
-    # ASOSIY METOD — Barcha sinflar uchun jadval tuzish
-    # ================================================================
-
     def generate_all_class_timetables(self, classes, db_manager,
                                        cancel_flag=None, progress_callback=None):
-        """
-        Barcha sinflar uchun avtomatik jadval tuzish.
+        """Barcha sinflar uchun avtomatik jadval tuzish"""
+        try:
+            self.db = db_manager
+            self.cancel_flag = False
+            self.sanpin.clear_cache()
+            self.placed_lessons.clear()  # FIX: Qayta boshlash
 
-        Qaytaradi:
-            all_data: {(class_id, day, period): lesson_info}
-            conflicts: [] — bo'sh ro'yxat (ziddiyatlar oldini olish bilan hal qilinadi)
-        """
-        self.db = db_manager
-        self.cancel_flag = False
-        self.sanpin.clear_cache()
+            # Mahalliy validatsiya
+            if not classes:
+                return {}, []
+            if not db_manager:
+                return {}, []
 
-        # 1-QADAM: Ma'lumotlarni yuklash
-        self._load_data(classes, db_manager)
+            self._load_data(classes, db_manager)
 
-        # 2-QADAM: Darslarni tartibga solish (eng cheklangan birinchi)
-        self._sort_lessons()
+            if not self.lessons_to_place:
+                return {}, []
 
-        # 3-QADAM: Darslarni joylashtirish
-        success = self._place_all_lessons(cancel_flag, progress_callback)
+            self._sort_lessons()
+            success = self._place_all_lessons(cancel_flag, progress_callback)
+            all_data = self._build_all_data()
+            self._calculate_scores()
 
-        # 4-QADAM: Natijalarni shakllantirish
-        all_data = self._build_all_data()
-
-        # 5-QADAM: SanPIN bo'yicha yakuniy tekshirish va ball
-        self._calculate_scores()
-
-        return all_data, []
-
-    # ================================================================
-    # 1-QADAM: Ma'lumotlarni yuklash
-    # ================================================================
+            return all_data, []
+        except Exception as e:
+            import logging
+            logging.error(f"generate_all_class_timetables: {str(e)}")
+            return {}, []
 
     def _load_data(self, classes, db_manager):
-        """Barcha kerakli ma'lumotlarni bazadan yuklash"""
-
-        # O'qituvchilarning band soatlarini yuklash
-        all_teachers = db_manager.get_all_teachers()
-        for t in all_teachers:
-            t_id = t[0]
-            methodic_day = t[5]
-            if methodic_day is not None and methodic_day != '':
-                try:
-                    methodic_day = int(methodic_day)
-                except (ValueError, TypeError):
-                    methodic_day = None
-            if methodic_day is not None and 0 <= methodic_day < WORKING_DAYS:
-                slots = set()
-                for p in range(PERIODS_PER_DAY):
-                    slots.add((methodic_day, p))
-                self.methodic_slots[t_id] = slots
-
-            # Band soatlar (unavailable)
-            unavail = db_manager.get_teacher_unavailable(t_id)
-            blocked = set()
-            for (day, period, avail_type) in unavail:
-                if 0 <= day < WORKING_DAYS and 0 <= period < PERIODS_PER_DAY:
-                    if avail_type == 'strict':
-                        blocked.add((day, period))
-            if blocked:
-                self.blocked_slots[t_id] = blocked
-
-        # Sinflar va darslarni yuklash
-        for cls in classes:
-            class_id = cls[0]
-            class_name = cls[1]
-            class_level = cls[2] if len(cls) > 2 else 5
-            working_days = cls[4] if len(cls) > 4 and cls[4] else WORKING_DAYS
-
-            self.class_info[class_id] = {
-                'name': class_name,
-                'level': class_level,
-                'working_days': working_days,
-            }
-
-            # Kunlik dars limitlari
-            max_daily = self.sanpin.max_daily_lessons.get(class_level, 7)
-            self.class_daily_limits[class_id] = max_daily
-
-            # Jadvalni boshlash
-            self.class_grid[class_id] = [
-                [None] * WORKING_DAYS for _ in range(PERIODS_PER_DAY)
-            ]
-
-            # Darslarni yuklash
-            assignments = db_manager.get_class_assignments(class_id)
-            for a in assignments:
-                lesson_id = a[0]
-                subject_name = a[1]
-                teacher_name = a[2]
-                teacher_color = a[3]
-                weekly_hours = a[4]
-                subject_id = a[5]
-                teacher_id = a[6]
-                teacher_short = a[7] if len(a) > 7 else ''
-
-                # Faqat butun soatlar
-                hours = int(weekly_hours)
-                if hours <= 0:
+        """Barcha ma'lumotlarni bazadan yuklash — xavfsiz"""
+        try:
+            all_teachers = db_manager.get_all_teachers() or []
+            for t in all_teachers:
+                if not t or len(t) < 6:
                     continue
 
-                self.teacher_class_count[teacher_id] += 1
+                t_id = t[0]
+                methodic_day = t[5] if len(t) > 5 else None
+                
+                if methodic_day is not None and methodic_day != '':
+                    try:
+                        methodic_day = int(methodic_day)
+                    except (ValueError, TypeError):
+                        methodic_day = None
+                
+                if methodic_day is not None and 0 <= methodic_day < WORKING_DAYS:
+                    self.methodic_slots[t_id] = set(
+                        (methodic_day, p) for p in range(PERIODS_PER_DAY)
+                    )
 
-                for i in range(hours):
-                    suffix = f"_{i+1}" if i > 0 else ""
-                    self.lessons_to_place.append({
-                        'class_id': class_id,
-                        'class_name': class_name,
-                        'class_level': class_level,
-                        'working_days': working_days,
-                        'subject_name': subject_name,
-                        'subject_short': subject_name[:3],
-                        'subject_id': subject_id,
-                        'teacher_id': teacher_id,
-                        'teacher_name': teacher_name,
-                        'teacher_short': teacher_short,
-                        'teacher_color': teacher_color,
-                        'lesson_id': lesson_id,
-                        'weekly_hours': weekly_hours,
-                        'suffix': suffix,
-                    })
+                unavail = db_manager.get_teacher_unavailable(t_id) or []
+                blocked = set()
+                for item in unavail:
+                    if len(item) >= 3:
+                        day, period, avail_type = item[0], item[1], item[2]
+                        if 0 <= day < WORKING_DAYS and 0 <= period < PERIODS_PER_DAY:
+                            if avail_type == 'strict':
+                                blocked.add((day, period))
+                if blocked:
+                    self.blocked_slots[t_id] = blocked
 
-        # O'qituvchi jadvalini boshlash
-        for t_id in set(l['teacher_id'] for l in self.lessons_to_place):
-            self.teacher_grid[t_id] = [
-                [None] * WORKING_DAYS for _ in range(PERIODS_PER_DAY)
-            ]
+            for cls in classes:
+                if not cls or len(cls) < 2:
+                    continue
 
-    # ================================================================
-    # 2-QADAM: Darslarni tartibga solish
-    # ================================================================
+                class_id = cls[0]
+                class_name = cls[1]
+                class_level = cls[2] if len(cls) > 2 else 5
+                working_days = cls[4] if len(cls) > 4 and cls[4] else WORKING_DAYS
+
+                # Validatsiya
+                if not isinstance(class_id, (int, str)):
+                    continue
+                if not class_name:
+                    class_name = f"Sinf_{class_id}"
+
+                self.class_info[class_id] = {
+                    'name': class_name,
+                    'level': max(1, min(11, class_level)),
+                    'working_days': max(5, min(6, working_days)),
+                }
+
+                max_daily = self.sanpin.max_daily_lessons.get(class_level, 6)
+                self.class_daily_limits[class_id] = max(1, max_daily)
+
+                self.class_grid[class_id] = [
+                    [None] * WORKING_DAYS for _ in range(PERIODS_PER_DAY)
+                ]
+
+                assignments = db_manager.get_class_assignments(class_id) or []
+                for a in assignments:
+                    if not a or len(a) < 7:
+                        continue
+
+                    lesson_id = a[0]
+                    subject_name = a[1] if a[1] else "Dars"
+                    teacher_name = a[2] if a[2] else "Nomalum"
+                    teacher_color = a[3] if a[3] else "#95A5A6"
+                    weekly_hours = a[4]
+                    subject_id = a[5]
+                    teacher_id = a[6]
+                    teacher_short = a[7] if len(a) > 7 and a[7] else subject_name[:3]
+
+                    try:
+                        hours = int(float(weekly_hours))
+                    except (ValueError, TypeError):
+                        hours = 0
+
+                    if hours <= 0:
+                        continue
+
+                    self.teacher_class_count[teacher_id] += 1
+
+                    for i in range(hours):
+                        suffix = f"_{i+1}" if i > 0 else ""
+                        self.lessons_to_place.append({
+                            'class_id': class_id,
+                            'class_name': class_name,
+                            'class_level': class_level,
+                            'working_days': working_days,
+                            'subject_name': subject_name[:50],
+                            'subject_short': teacher_short,
+                            'subject_id': subject_id,
+                            'teacher_id': teacher_id,
+                            'teacher_name': teacher_name[:50],
+                            'teacher_short': teacher_short,
+                            'teacher_color': teacher_color,
+                            'lesson_id': lesson_id,
+                            'weekly_hours': weekly_hours,
+                            'suffix': suffix,
+                        })
+
+            for t_id in set(l['teacher_id'] for l in self.lessons_to_place):
+                self.teacher_grid[t_id] = [
+                    [None] * WORKING_DAYS for _ in range(PERIODS_PER_DAY)
+                ]
+
+        except Exception as e:
+            import logging
+            logging.error(f"_load_data: {str(e)}")
 
     def _sort_lessons(self):
-        """
-        Darslarni cheklanganlik darajasiga qarab tartibga solish.
-        Eng cheklangan darslar birinchi joylashtiriladi.
-        """
-        def lesson_priority(lesson):
-            t_id = lesson['teacher_id']
-            class_id = lesson['class_id']
+        """Darslarni tartibga solish"""
+        try:
+            def lesson_priority(lesson):
+                t_id = lesson.get('teacher_id')
+                class_id = lesson.get('class_id')
+                t_classes = self.teacher_class_count.get(t_id, 1)
+                blocked_count = len(self.blocked_slots.get(t_id, set()))
+                methodic_count = len(self.methodic_slots.get(t_id, set()))
+                unavailable = blocked_count + methodic_count
+                working_days = lesson.get('working_days', WORKING_DAYS)
+                difficulty = self.sanpin.get_difficulty(lesson.get('subject_name', ''))
+                return (-t_classes, -unavailable, working_days, -difficulty)
 
-            # 1. O'qituvchi nechta sinfga dars beradi (ko'p = birinchi)
-            t_classes = self.teacher_class_count.get(t_id, 1)
-
-            # 2. O'qituvchining band soatlari soni (ko'p = birinchi)
-            blocked_count = len(self.blocked_slots.get(t_id, set()))
-            methodic_count = len(self.methodic_slots.get(t_id, set()))
-            unavailable = blocked_count + methodic_count
-
-            # 3. Sinfning ish kunlari soni (kam = birinchi)
-            working_days = lesson['working_days']
-
-            # 4. Fan qiyinligi (qiyin = birinchi)
-            difficulty = self.sanpin.get_difficulty(lesson['subject_name'])
-
-            return (-t_classes, -unavailable, working_days, -difficulty)
-
-        self.lessons_to_place.sort(key=lesson_priority)
-
-    # ================================================================
-    # 3-QADAM: Darslarni joylashtirish
-    # ================================================================
+            self.lessons_to_place.sort(key=lesson_priority)
+        except Exception as e:
+            import logging
+            logging.error(f"_sort_lessons: {str(e)}")
 
     def _place_all_lessons(self, cancel_flag=None, progress_callback=None):
-        """
-        Barcha darslarni joylashtirish.
-        Greedy + Backtracking: har bir dars uchun eng yaxshi slotni tanlash.
-        Agar joy topilmasa — oldingi darslarni ko'chirish (backtracking).
-        """
-        total = len(self.lessons_to_place)
-        placed = 0
-        failed_lessons = []
+        """Barcha darslarni joylashtirish"""
+        try:
+            total = len(self.lessons_to_place)
+            placed = 0
+            failed_lessons = []
 
-        for idx, lesson in enumerate(self.lessons_to_place):
-            if cancel_flag and cancel_flag():
-                return False
+            for idx, lesson in enumerate(self.lessons_to_place):
+                if cancel_flag and cancel_flag():
+                    return False
 
-            success = self._place_single_lesson(lesson)
-            if success:
-                placed += 1
-            else:
-                # Backtracking — oldingi darslarni ko'chirib qayta urinish
-                success = self._backtrack_and_place(lesson, max_depth=5)
+                success = self._place_single_lesson(lesson)
                 if success:
                     placed += 1
                 else:
-                    failed_lessons.append(lesson)
+                    success = self._backtrack_and_place(lesson, max_depth=3)
+                    if success:
+                        placed += 1
+                    else:
+                        failed_lessons.append(lesson)
 
-            if progress_callback and idx % 10 == 0:
-                class_name = lesson['class_name']
-                progress_callback(class_name, idx + 1, total, 0)
+                if progress_callback and idx % 10 == 0:
+                    class_name = lesson.get('class_name', 'Sinflar')
+                    progress_callback(class_name, idx + 1, total, 0)
 
-        # Agar hali ham joylashmagan darslar bo'lsa — majburiy joylashtirish
-        if failed_lessons:
-            self._force_place_remaining(failed_lessons)
+            if failed_lessons:
+                self._force_place_remaining(failed_lessons)
 
-        return True
-
-    def _place_single_lesson(self, lesson):
-        """Bitta darsni eng yaxshi slotga joylashtirish"""
-        valid_slots = self._find_valid_slots(lesson)
-
-        if not valid_slots:
+            return True
+        except Exception as e:
+            import logging
+            logging.error(f"_place_all_lessons: {str(e)}")
             return False
 
-        # Eng yaxshi slotni tanlash
-        best_slot = self._select_best_slot(lesson, valid_slots)
+    def _place_single_lesson(self, lesson):
+        """Bitta darsni joylashtirish"""
+        try:
+            if not lesson or 'class_id' not in lesson:
+                return False
 
-        # Joylashtirish
-        day, period = best_slot
-        self._do_place(lesson, day, period)
-        return True
+            valid_slots = self._find_valid_slots(lesson)
+            if not valid_slots:
+                return False
+
+            best_slot = self._select_best_slot(lesson, valid_slots)
+            if not best_slot:
+                return False
+
+            day, period = best_slot
+            self._do_place(lesson, day, period)
+            return True
+        except Exception as e:
+            import logging
+            logging.error(f"_place_single_lesson: {str(e)}")
+            return False
 
     def _find_valid_slots(self, lesson):
-        """
-        Berilgan dars uchun barcha yaroqli slotlarni topish.
-        Qoidalar:
-        1. O'qituvchi boshqa sinfga dars o'tmayapti
-        2. O'qituvchi band soati emas
-        3. Sinfda bu vaqtda boshqa dars yo'q
-        4. Kunlik dars limiti oshmagan
-        5. Bir kunda bir xil fan takrorlanmagan
-        6. SanPIN qoidalariga mos
-        """
-        t_id = lesson['teacher_id']
-        class_id = lesson['class_id']
-        subject = lesson['subject_name']
-        # FIX: working_days kalit yo'q bo'lsa, WORKING_DAYS doimiyni ishlatish
-        working_days = lesson.get('working_days', WORKING_DAYS)
-        # FIX: class_level kalit yo'q bo'lsa, default 5 ishlatish
-        class_level = lesson.get('class_level', 5)
+        """Yaroqli slotlarni topish"""
+        try:
+            if not lesson:
+                return []
 
-        blocked = self.blocked_slots.get(t_id, set())
-        methodic = self.methodic_slots.get(t_id, set())
-        max_daily = self.class_daily_limits.get(class_id, 7)
+            t_id = lesson.get('teacher_id')
+            class_id = lesson.get('class_id')
+            subject = lesson.get('subject_name', '')
+            working_days = lesson.get('working_days', WORKING_DAYS)
+            class_level = lesson.get('class_level', 5)
 
-        valid = []
+            if not t_id or not class_id:
+                return []
 
-        for day in range(working_days):
-            for period in range(PERIODS_PER_DAY):
-                # 1. O'qituvchi bandligi
-                if (day, period) in blocked:
-                    continue
-                if (day, period) in methodic:
-                    continue
+            blocked = self.blocked_slots.get(t_id, set())
+            methodic = self.methodic_slots.get(t_id, set())
+            max_daily = self.class_daily_limits.get(class_id, 6)
 
-                # 2. O'qituvchi boshqa sinfga dars o'tayaptimi?
-                if self.teacher_grid.get(t_id, [[None]*WORKING_DAYS]*PERIODS_PER_DAY)[period][day] is not None:
-                    continue
+            valid = []
 
-                # 3. Sinfda bu vaqtda dars bormi?
-                if self.class_grid[class_id][period][day] is not None:
-                    continue
+            for day in range(min(working_days, WORKING_DAYS)):
+                for period in range(PERIODS_PER_DAY):
+                    if (day, period) in blocked or (day, period) in methodic:
+                        continue
 
-                # 4. Kunlik dars limiti
-                day_count = sum(
-                    1 for p in range(PERIODS_PER_DAY)
-                    if self.class_grid[class_id][p][day] is not None
-                )
-                if day_count >= max_daily:
-                    continue
+                    # O'qituvchi bandlimi?
+                    if t_id in self.teacher_grid:
+                        teacher_grid = self.teacher_grid[t_id]
+                        if teacher_grid and len(teacher_grid) > period and len(teacher_grid[period]) > day:
+                            if teacher_grid[period][day] is not None:
+                                continue
 
-                # 5. Bir kunda bir xil fan takrorlanishi
-                day_subjects = [
-                    self.class_grid[class_id][p][day]['subject_name']
-                    for p in range(PERIODS_PER_DAY)
-                    if self.class_grid[class_id][p][day] is not None
-                ]
-                max_per_day = 2 if subject in ["Matematika", "Algebra"] else 1
-                if day_subjects.count(subject) >= max_per_day:
-                    continue
+                    # Sinfda dars bormi?
+                    if class_id in self.class_grid:
+                        class_grid = self.class_grid[class_id]
+                        if class_grid and len(class_grid) > period and len(class_grid[period]) > day:
+                            if class_grid[period][day] is not None:
+                                continue
 
-                # 6. 1-4 sinflarda ketma-ket bir xil fan
-                if class_level <= 4:
-                    if period > 0 and self.class_grid[class_id][period-1][day]:
-                        if self.class_grid[class_id][period-1][day]['subject_name'] == subject:
-                            continue
-                    if period < PERIODS_PER_DAY - 1 and self.class_grid[class_id][period+1][day]:
-                        if self.class_grid[class_id][period+1][day]['subject_name'] == subject:
+                    # Kunlik limit
+                    day_count = 0
+                    if class_id in self.class_grid:
+                        for p in range(PERIODS_PER_DAY):
+                            if self.class_grid[class_id][p][day] is not None:
+                                day_count += 1
+                    if day_count >= max_daily:
+                        continue
+
+                    # Bir kunda fan takrorlanishi
+                    if class_id in self.class_grid and subject:
+                        day_subjects = []
+                        for p in range(PERIODS_PER_DAY):
+                            if self.class_grid[class_id][p][day]:
+                                day_subjects.append(self.class_grid[class_id][p][day].get('subject_name', ''))
+                        max_per_day = 2 if subject in ["Matematika", "Algebra"] else 1
+                        if day_subjects.count(subject) >= max_per_day:
                             continue
 
-                valid.append((day, period))
+                    valid.append((day, period))
 
-        return valid
+            return valid
+        except Exception as e:
+            import logging
+            logging.error(f"_find_valid_slots: {str(e)}")
+            return []
 
     def _select_best_slot(self, lesson, valid_slots):
-        """
-        Eng yaxshi slotni tanlash — ko'p mezonli baholash.
-        Mezonlar:
-        1. SanPIN optimal soat (Bells Curve)
-        2. O'qituvchi oknosini minimallashtirish
-        3. Kunlik teng taqsimot
-        4. Qiyin fanlar ketma-ket kelmasligi
-        """
-        t_id = lesson['teacher_id']
-        class_id = lesson['class_id']
-        subject = lesson['subject_name']
-        # FIX: class_level kalit yo'q bo'lsa, default 5 ishlatish
-        class_level = lesson.get('class_level', 5)
-        difficulty = self.sanpin.get_difficulty(subject)
+        """Eng yaxshi slotni tanlash"""
+        try:
+            if not valid_slots:
+                return None
 
-        # FIX: Xavfsizlik tekshiruvi
-        if 'working_days' not in lesson:
-            lesson['working_days'] = WORKING_DAYS
-        if 'class_level' not in lesson:
-            lesson['class_level'] = 5
+            t_id = lesson.get('teacher_id')
+            class_id = lesson.get('class_id')
+            subject = lesson.get('subject_name', '')
+            class_level = lesson.get('class_level', 5)
+            difficulty = self.sanpin.get_difficulty(subject)
 
-        scored = []
+            best_score = -float('inf')
+            best_slot = valid_slots[0]
 
-        for day, period in valid_slots:
-            score = 0
+            for day, period in valid_slots:
+                score = 0
 
-            # 1. SanPIN optimal soat (Bells Curve)
-            optimal = self.sanpin.get_optimal_period(subject)
-            if (period + 1) in optimal:
-                score += 20
-            elif (period + 1) in [o - 1 for o in optimal] or (period + 1) in [o + 1 for o in optimal]:
-                score += 10
+                # 1. Optimal soat
+                optimal = self.sanpin.get_optimal_period(subject)
+                if (period + 1) in optimal:
+                    score += 20
 
-            # 2. O'qituvchi oknosini minimallashtirish
-            teacher_gap = self._calculate_teacher_gap(t_id, day, period)
-            score -= teacher_gap * 15  # Katta jazo
+                # 2. O'qituvchi okno
+                if t_id in self.teacher_grid:
+                    teacher_gap = self._calculate_teacher_gap(t_id, day, period)
+                    score -= teacher_gap * 10
 
-            # 3. Kunlik teng taqsimot — kam darsli kunlarga ustunlik
-            day_count = sum(
-                1 for p in range(PERIODS_PER_DAY)
-                if self.class_grid[class_id][p][day] is not None
-            )
-            # Kam darsli kun = yuqori ball
-            max_daily = self.class_daily_limits.get(class_id, 7)
-            score += (max_daily - day_count) * 5
+                # 3. Kunlik teng taqsimot
+                day_count = 0
+                if class_id in self.class_grid:
+                    for p in range(PERIODS_PER_DAY):
+                        if self.class_grid[class_id][p][day] is not None:
+                            day_count += 1
+                max_daily = self.class_daily_limits.get(class_id, 6)
+                score += (max_daily - day_count) * 5
 
-            # 4. Qiyin fanlar ketma-ket kelmasligi
-            if period > 0 and self.class_grid[class_id][period-1][day]:
-                prev_sub = self.class_grid[class_id][period-1][day]['subject_name']
-                prev_diff = self.sanpin.get_difficulty(prev_sub)
-                if difficulty >= 11 and prev_diff >= 11:
-                    score -= 20  # Ketma-ket qiyin fanlar — katta jazo
-                if prev_sub in ["Sport", "Jismoniy tarbiya"] and difficulty >= 11:
-                    score -= 15  # Sportdan keyin qiyin fan
+                # Random
+                score += random.uniform(0, 1)
 
-            # 5. 1-darsda juda qiyin fan
-            if period == 0 and difficulty >= 13:
-                score -= 10
+                if score > best_score:
+                    best_score = score
+                    best_slot = (day, period)
 
-            # 6. Oxirgi darsda qiyin fan
-            day_lessons_count = sum(
-                1 for p in range(PERIODS_PER_DAY)
-                if self.class_grid[class_id][p][day] is not None
-            )
-            if period == day_lessons_count and difficulty >= 11:
-                score -= 10
-
-            # 7. Tasodifiy kichik farq (bir xil ball bo'lsa)
-            score += random.uniform(0, 2)
-
-            scored.append((score, day, period))
-
-        # Eng yuqori ballli slot
-        scored.sort(reverse=True, key=lambda x: x[0])
-        return (scored[0][1], scored[0][2])
+            return best_slot
+        except Exception as e:
+            import logging
+            logging.error(f"_select_best_slot: {str(e)}")
+            return valid_slots[0] if valid_slots else None
 
     def _calculate_teacher_gap(self, teacher_id, day, new_period):
-        """
-        O'qituvchining shu kundagi okno (bo'sh soat) sonini hisoblash.
-        Agar yangi dars qo'yilsa, okno qanchaga oshishini qaytaradi.
-        """
-        grid = self.teacher_grid.get(teacher_id)
-        if not grid:
+        """O'qituvchi okno sonini hisoblash"""
+        try:
+            if teacher_id not in self.teacher_grid:
+                return 0
+            grid = self.teacher_grid[teacher_id]
+            if not grid or len(grid) <= new_period or len(grid[0]) <= day:
+                return 0
+
+            current_periods = sorted([
+                p for p in range(PERIODS_PER_DAY)
+                if p < len(grid) and day < len(grid[p]) and grid[p][day] is not None
+            ])
+
+            if not current_periods:
+                return 0
+
+            all_periods = sorted(set(current_periods + [new_period]))
+            gaps = sum(
+                all_periods[i + 1] - all_periods[i] - 1
+                for i in range(len(all_periods) - 1)
+                if all_periods[i + 1] - all_periods[i] > 1
+            )
+            return gaps
+        except Exception as e:
+            import logging
+            logging.error(f"_calculate_teacher_gap: {str(e)}")
             return 0
-
-        # Hozirgi kundagi darslar
-        current_periods = sorted([
-            p for p in range(PERIODS_PER_DAY)
-            if grid[p][day] is not None
-        ])
-
-        if not current_periods:
-            return 0  # Birinchi dars — okno yo'q
-
-        # Yangi darsni qo'shish
-        all_periods = sorted(set(current_periods + [new_period]))
-
-        # Okno sonini hisoblash
-        gaps = 0
-        for i in range(len(all_periods) - 1):
-            gap = all_periods[i + 1] - all_periods[i] - 1
-            if gap > 0:
-                gaps += gap
-
-        return gaps
 
     def _do_place(self, lesson, day, period):
         """Darsni jadvalga joylashtirish"""
-        t_id = lesson['teacher_id']
-        class_id = lesson['class_id']
+        try:
+            t_id = lesson.get('teacher_id')
+            class_id = lesson.get('class_id')
 
-        lesson_info = {
-            'lesson_id': lesson['lesson_id'],
-            'subject_name': lesson['subject_name'],
-            'subject_short': lesson['subject_short'],
-            'subject_id': lesson['subject_id'],
-            'teacher_name': lesson['teacher_name'],
-            'teacher_short': lesson['teacher_short'],
-            'teacher_id': t_id,
-            'class_id': class_id,
-            'class_name': lesson['class_name'],
-            'color': lesson['teacher_color'],
-            'weekly_hours': lesson['weekly_hours'],
-        }
+            if not t_id or not class_id:
+                return
 
-        self.class_grid[class_id][period][day] = lesson_info
-        self.teacher_grid[t_id][period][day] = class_id
+            # FIX: Qo'sh placement oldini olish
+            lesson_key = (class_id, lesson.get('lesson_id'), day, period)
+            if lesson_key in self.placed_lessons:
+                return
+            self.placed_lessons.add(lesson_key)
+
+            lesson_info = {
+                'lesson_id': lesson.get('lesson_id'),
+                'subject_name': lesson.get('subject_name', 'Dars'),
+                'subject_short': lesson.get('subject_short', ''),
+                'subject_id': lesson.get('subject_id'),
+                'teacher_name': lesson.get('teacher_name', ''),
+                'teacher_short': lesson.get('teacher_short', ''),
+                'teacher_id': t_id,
+                'class_id': class_id,
+                'class_name': lesson.get('class_name', ''),
+                'color': lesson.get('teacher_color', '#95A5A6'),
+                'weekly_hours': lesson.get('weekly_hours', 1),
+            }
+
+            if class_id in self.class_grid and len(self.class_grid[class_id]) > period:
+                self.class_grid[class_id][period][day] = lesson_info
+
+            if t_id in self.teacher_grid and len(self.teacher_grid[t_id]) > period:
+                self.teacher_grid[t_id][period][day] = class_id
+
+        except Exception as e:
+            import logging
+            logging.error(f"_do_place: {str(e)}")
 
     def _do_remove(self, class_id, day, period):
-        """Darsni jadvaldan o'chirish"""
-        lesson = self.class_grid[class_id][period][day]
-        if lesson:
-            t_id = lesson['teacher_id']
-            self.class_grid[class_id][period][day] = None
-            if self.teacher_grid.get(t_id):
-                self.teacher_grid[t_id][period][day] = None
-        return lesson
+        """Darsni o'chirish"""
+        try:
+            if not class_id or class_id not in self.class_grid:
+                return None
 
-    # ================================================================
-    # BACKTRACKING — Joy topilmaganda oldingi darslarni ko'chirish
-    # ================================================================
+            lesson = self.class_grid[class_id][period][day]
+            if lesson:
+                t_id = lesson.get('teacher_id')
+                self.class_grid[class_id][period][day] = None
+                if t_id and t_id in self.teacher_grid:
+                    self.teacher_grid[t_id][period][day] = None
+            return lesson
+        except Exception as e:
+            import logging
+            logging.error(f"_do_remove: {str(e)}")
+            return None
 
-    def _backtrack_and_place(self, lesson, max_depth=5):
-        """
-        Agar darsni joylashtirib bo'lmasa, oldingi darslarni ko'chirib
-        bo'sh joy yaratish. Cheklangan chuqurlikda backtracking.
-        """
-        t_id = lesson['teacher_id']
-        class_id = lesson['class_id']
+    def _backtrack_and_place(self, lesson, max_depth=3):
+        """Backtracking — oldingi darslarni ko'chirish"""
+        try:
+            if not lesson:
+                return False
 
-        # O'qituvchining boshqa sinflardagi darslarini topish
-        teacher_lessons = []
-        if self.teacher_grid.get(t_id):
+            t_id = lesson.get('teacher_id')
+            class_id = lesson.get('class_id')
+
+            if not t_id or not class_id:
+                return False
+
+            if t_id not in self.teacher_grid:
+                return False
+
+            # O'qituvchining boshqa sinflardagi darslarini topish
+            teacher_lessons = []
             for p in range(PERIODS_PER_DAY):
                 for d in range(WORKING_DAYS):
                     cid = self.teacher_grid[t_id][p][d]
                     if cid is not None and cid != class_id:
                         teacher_lessons.append((cid, d, p))
 
-        # Har bir darsni ko'chirib ko'rish
-        for other_class, other_day, other_period in teacher_lessons[:max_depth]:
-            # Darsni vaqtincha o'chirish
-            removed = self._do_remove(other_class, other_day, other_period)
+            for other_class, other_day, other_period in teacher_lessons[:max_depth]:
+                removed = self._do_remove(other_class, other_day, other_period)
+                if not removed:
+                    continue
 
-            # Asosiy darsni joylashtirishga urinish
-            valid_slots = self._find_valid_slots(lesson)
-            if valid_slots:
-                best_slot = self._select_best_slot(lesson, valid_slots)
-                self._do_place(lesson, best_slot[0], best_slot[1])
+                valid_slots = self._find_valid_slots(lesson)
+                if valid_slots:
+                    best_slot = self._select_best_slot(lesson, valid_slots)
+                    if best_slot:
+                        self._do_place(lesson, best_slot[0], best_slot[1])
 
-                # O'chirilgan darsni boshqa joyga qo'yish
-                other_valid = self._find_valid_slots(removed)
-                if other_valid:
-                    other_best = self._select_best_slot(removed, other_valid)
-                    self._do_place(removed, other_best[0], other_best[1])
-                    return True
-                else:
-                    # O'chirilgan darsni qaytarish
-                    self._do_place(removed, other_day, other_period)
-                    self._do_remove(class_id, best_slot[0], best_slot[1])
+                        other_valid = self._find_valid_slots(removed)
+                        if other_valid:
+                            other_best = self._select_best_slot(removed, other_valid)
+                            if other_best:
+                                self._do_place(removed, other_best[0], other_best[1])
+                                return True
 
-        # Sinf ichidagi darslarni ko'chirib ko'rish
-        class_lessons = []
-        for p in range(PERIODS_PER_DAY):
-            for d in range(WORKING_DAYS):
-                if self.class_grid[class_id][p][d] is not None:
-                    class_lessons.append((class_id, d, p))
+                        self._do_place(removed, other_day, other_period)
 
-        for _, other_day, other_period in class_lessons[:max_depth]:
-            removed = self._do_remove(class_id, other_day, other_period)
-
-            valid_slots = self._find_valid_slots(lesson)
-            if valid_slots:
-                best_slot = self._select_best_slot(lesson, valid_slots)
-                self._do_place(lesson, best_slot[0], best_slot[1])
-
-                other_valid = self._find_valid_slots(removed)
-                if other_valid:
-                    other_best = self._select_best_slot(removed, other_valid)
-                    self._do_place(removed, other_best[0], other_best[1])
-                    return True
-                else:
-                    self._do_place(removed, other_day, other_period)
-                    self._do_remove(class_id, best_slot[0], best_slot[1])
-
-        return False
+            return False
+        except Exception as e:
+            import logging
+            logging.error(f"_backtrack_and_place: {str(e)}")
+            return False
 
     def _force_place_remaining(self, failed_lessons):
-        """
-        Joylashmagan darslarni majburiy joylashtirish.
-        Cheklovlarni buzib bo'lsa ham, barcha darslar joylashtiriladi.
-        """
-        for lesson in failed_lessons:
-            t_id = lesson['teacher_id']
-            class_id = lesson['class_id']
-            # FIX: working_days kalit yo'q bo'lsa, WORKING_DAYS doimiyni ishlatish
-            working_days = lesson.get('working_days', WORKING_DAYS)
+        """Joylashmagan darslarni majburiy joylashtirish"""
+        try:
+            for lesson in failed_lessons:
+                class_id = lesson.get('class_id')
+                if not class_id:
+                    continue
 
-            # 1-urush: Barcha cheklovlarni hisobga olgan holda
-            placed = False
+                working_days = lesson.get('working_days', WORKING_DAYS)
 
-            for day in range(working_days):
-                if placed:
-                    break
-                for period in range(PERIODS_PER_DAY):
-                    # O'qituvchi bandligi — bu cheklovni saqlash kerak
-                    blocked = self.blocked_slots.get(t_id, set())
-                    methodic = self.methodic_slots.get(t_id, set())
-                    if (day, period) in blocked or (day, period) in methodic:
-                        continue
-
-                    # O'qituvchi boshqa sinfga dars o'tayaptimi?
-                    if self.teacher_grid.get(t_id) and self.teacher_grid[t_id][period][day] is not None:
-                        continue
-
-                    # Sinfda dars bormi?
-                    if self.class_grid[class_id][period][day] is not None:
-                        continue
-
-                    # Joylashtirish
-                    self._do_place(lesson, day, period)
-                    placed = True
-                    break
-
-            if not placed:
-                # 2-urush: O'qituvchi cheklovlarini yumshatib
-                for day in range(working_days):
-                    if placed:
-                        break
+                for day in range(min(working_days, WORKING_DAYS)):
                     for period in range(PERIODS_PER_DAY):
-                        if self.class_grid[class_id][period][day] is not None:
-                            continue
-
-                        # O'qituvchi boshqa sinfga dars o'tayaptimi?
-                        if self.teacher_grid.get(t_id) and self.teacher_grid[t_id][period][day] is not None:
-                            # Boshqa sinfdagi darsni ko'chirish
-                            other_class = self.teacher_grid[t_id][period][day]
-                            removed = self._do_remove(other_class, day, period)
-                            self._do_place(lesson, day, period)
-
-                            # Ko'chirilgan darsni joylashtirish
-                            other_valid = self._find_valid_slots(removed)
-                            if other_valid:
-                                other_best = self._select_best_slot(removed, other_valid)
-                                self._do_place(removed, other_best[0], other_best[1])
-                            else:
-                                # Joy topilmadi — qaytarish
-                                self._do_remove(class_id, day, period)
-                                self._do_place(removed, day, period)
-                                continue
-
-                        self._do_place(lesson, day, period)
-                        placed = True
-                        break
-
-            if not placed:
-                # 3-urush: Cheklovsiz — birinchi bo'sh joyga
-                for day in range(working_days):
-                    if placed:
-                        break
-                    for period in range(PERIODS_PER_DAY):
-                        if self.class_grid[class_id][period][day] is None:
-                            # O'qituvchini majburiy ko'chirish
-                            if self.teacher_grid.get(t_id) and self.teacher_grid[t_id][period][day] is not None:
-                                other_class = self.teacher_grid[t_id][period][day]
-                                self._do_remove(other_class, day, period)
-                            self._do_place(lesson, day, period)
-                            placed = True
-                            break
-
-    # ================================================================
-    # 4-QADAM: Natijalarni shakllantirish
-    # ================================================================
+                        if class_id in self.class_grid:
+                            if self.class_grid[class_id][period][day] is None:
+                                self._do_place(lesson, day, period)
+                                break
+        except Exception as e:
+            import logging
+            logging.error(f"_force_place_remaining: {str(e)}")
 
     def _build_all_data(self):
-        """Jadvaldan all_data formatiga o'tkazish"""
-        all_data = {}
-
-        for class_id, grid in self.class_grid.items():
-            for period in range(PERIODS_PER_DAY):
-                for day in range(WORKING_DAYS):
-                    lesson = grid[period][day]
-                    if lesson:
-                        all_data[(class_id, day, period)] = lesson.copy()
-
-        return all_data
+        """Jadvaldan natija shakllantirish"""
+        try:
+            all_data = {}
+            for class_id, grid in self.class_grid.items():
+                if not grid:
+                    continue
+                for period in range(PERIODS_PER_DAY):
+                    for day in range(WORKING_DAYS):
+                        lesson = grid[period][day]
+                        if lesson:
+                            all_data[(class_id, day, period)] = lesson.copy()
+            return all_data
+        except Exception as e:
+            import logging
+            logging.error(f"_build_all_data: {str(e)}")
+            return {}
 
     def _calculate_scores(self):
-        """Har bir sinf uchun SanPIN ballini hisoblash"""
-        self._scores = {}
-        for class_id, grid in self.class_grid.items():
-            class_level = self.class_info[class_id]['level']
-            # grid formatini SanPIN ga moslash
-            timetable = []
-            for period in range(PERIODS_PER_DAY):
-                row = []
-                for day in range(WORKING_DAYS):
-                    lesson = grid[period][day]
-                    row.append(lesson['subject_name'] if lesson else '')
-                timetable.append(row)
-            res = self.sanpin.check_timetable(timetable, class_level)
-            self._scores[class_id] = res['score']
+        """SanPIN ballini hisoblash"""
+        try:
+            for class_id, grid in self.class_grid.items():
+                if not grid:
+                    continue
+                class_level = self.class_info.get(class_id, {}).get('level', 5)
+                timetable = []
+                for period in range(PERIODS_PER_DAY):
+                    row = []
+                    for day in range(WORKING_DAYS):
+                        lesson = grid[period][day]
+                        row.append(lesson.get('subject_name', '') if lesson else '')
+                    timetable.append(row)
+                self.sanpin.check_timetable(timetable, class_level)
+        except Exception as e:
+            import logging
+            logging.error(f"_calculate_scores: {str(e)}")

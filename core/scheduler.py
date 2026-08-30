@@ -278,7 +278,8 @@ class TimetableScheduler:
         subject = lesson['subject_name']
         # FIX: working_days kalit yo'q bo'lsa, WORKING_DAYS doimiyni ishlatish
         working_days = lesson.get('working_days', WORKING_DAYS)
-        class_level = lesson['class_level']
+        # FIX: class_level kalit yo'q bo'lsa, default 5 ishlatish
+        class_level = lesson.get('class_level', 5)
 
         blocked = self.blocked_slots.get(t_id, set())
         methodic = self.methodic_slots.get(t_id, set())
@@ -345,12 +346,15 @@ class TimetableScheduler:
         t_id = lesson['teacher_id']
         class_id = lesson['class_id']
         subject = lesson['subject_name']
-        class_level = lesson['class_level']
+        # FIX: class_level kalit yo'q bo'lsa, default 5 ishlatish
+        class_level = lesson.get('class_level', 5)
         difficulty = self.sanpin.get_difficulty(subject)
 
         # FIX: Xavfsizlik tekshiruvi
         if 'working_days' not in lesson:
             lesson['working_days'] = WORKING_DAYS
+        if 'class_level' not in lesson:
+            lesson['class_level'] = 5
 
         scored = []
 
